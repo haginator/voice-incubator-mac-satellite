@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mac Satellite</title>
+<style>
+:root { --bg:#111418; --panel:#1a1f25; --line:#2a313a; --fg:#e6e9ee; --dim:#8a94a3; --acc:#4fa3ff; --red:#ff4f5e; --green:#3ddc84; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 -apple-system, system-ui, sans-serif; }
+header { display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line); }
+header h1 { font-size:16px; margin:0; font-weight:600; }
+.pill { padding:2px 10px; border-radius:99px; font-size:12px; background:var(--line); color:var(--dim); }
+.pill.on { background:#16391f; color:var(--green); }
+main { display:grid; grid-template-columns: 340px 1fr; gap:16px; padding:16px; height:calc(100vh - 53px); }
+@media (max-width: 800px) { main { grid-template-columns:1fr; height:auto; } }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+.left { display:flex; flex-direction:column; gap:16px; overflow:auto; }
+canvas { display:block; margin:0 auto; }
+#phase { text-align:center; color:var(--dim); margin-top:8px; min-height:20px; }
+#text { text-align:center; font-size:13px; min-height:18px; }
+.btns { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+button { background:var(--line); color:var(--fg); border:0; border-radius:8px; padding:12px; font-size:14px; cursor:pointer; }
+button:hover { filter:brightness(1.2); }
+button.mute.on { background:var(--red); color:#fff; }
+button.talk { background:var(--acc); color:#fff; }
+button.talk.active { background:var(--red); }
+label { display:block; color:var(--dim); font-size:12px; margin:8px 0 4px; }
+select, input[type=range] { width:100%; }
+select { background:var(--line); color:var(--fg); border:0; border-radius:6px; padding:6px; }
+.meter { height:10px; background:var(--line); border-radius:5px; position:relative; overflow:hidden; }
+.meter > div { height:100%; background:var(--green); width:0; transition:width .05s; }
+.meter .cut { position:absolute; top:0; bottom:0; width:2px; background:var(--red); }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:12px; color:var(--dim); }
+.kv b { color:var(--fg); font-weight:500; font-family:ui-monospace, monospace; }
+.right { display:flex; flex-direction:column; min-height:0; }
+.right .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+#log { flex:1; overflow:auto; font:12px/1.5 ui-monospace, Menlo, monospace; min-height:300px; }
+.row { padding:1px 0; border-bottom:1px solid #20262d; white-space:pre-wrap; word-break:break-word; }
+.row .t { color:var(--dim); }
+.k-rx { color:#7cc4ff; } .k-tx { color:#c39bff; } .k-wake { color:var(--green); } .k-warn { color:#ffb347; } .k-info { color:var(--dim); }
+.small { font-size:12px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎙️ Mac Satellite</h1>
+  <span id="conn" class="pill"></span>
+  <span id="call" class="pill"></span>
+  <span id="mon" class="pill" style="display:none">Monitor</span>
+  <span class="small" id="who"></span>
+  <select id="lang" style="margin-left:auto;width:auto"><option value="en">EN</option><option value="de">DE</option></select>
+</header>
+<main>
+  <div class="left">
+    <div class="panel">
+      <canvas id="ring" width="240" height="240"></canvas>
+      <div id="phase">–</div>
+      <div id="text"></div>
+    </div>
+    <div class="panel">
+      <div class="btns">
+        <button id="mute" class="mute"></button>
+        <button id="talk" class="talk"></button>
+      </div>
+      <label data-i18n="level"></label>
+      <div class="meter"><div id="lvl"></div></div>
+      <label data-i18n="prob"></label>
+      <div class="meter"><div id="prob" style="background:var(--acc)"></div><span class="cut" id="cut"></span></div>
+      <label data-i18n="wake_word"></label>
+      <select id="ww"></select>
+      <label><span data-i18n="cutoff"></span> <span id="cutv"></span></label>
+      <input id="cutoff" type="range" min="0.3" max="0.99" step="0.01">
+      <div style="margin-top:12px"><button id="tone" style="width:100%" data-i18n="tone"></button></div>
+    </div>
+    <div class="panel kv" id="info"></div>
+  </div>
+  <div class="panel right">
+    <div class="head"><b data-i18n="debug"></b>
+      <span><label style="display:inline"><input type="checkbox" id="auto" checked> <span data-i18n="autoscroll"></span></label>
+      <button id="clear" style="padding:4px 10px" data-i18n="clear"></button></span></div>
+    <div id="log"></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let S = {ring:{}}, M = {level:0, prob:0, cutoff:.9}, ws;
+const I18N = {
+  en: {connected:"App: {0}", disconnected:"no app connected", gui_lost:"GUI disconnected", call:"call active", nocall:"no call",
+    muted:"🔇 Muted", unmuted:"🎤 Mic active", cancel:"Cancel", stop_timer:"Stop timer", talk:"Talk (space)",
+    level:"Microphone level", prob:"Wake word probability", wake_word:"Wake word", cutoff:"Threshold", tone:"🔊 Test tone",
+    debug:"Live debug", autoscroll:"Auto-scroll", clear:"Clear", ringing:"⏰ Timer ringing",
+    name:"Name", mac:"MAC", night:"Night mode", timers:"Timers", announcement:"Announcement", on:"on", off:"off", running:"playing",
+    phase:{wake:"Wake word heard – verifying …", listening:"Listening", processing:"Processing", recognized:"Recognized",
+      not_recognized:"Not recognized", responding:"Responding", result:"Done", wake_rejected:"Wake word rejected", wake_overturned:"Accepted after all"},
+    log:{}},
+  de: {connected:"App: {0}", disconnected:"keine App verbunden", gui_lost:"GUI getrennt", call:"Call läuft", nocall:"kein Call",
+    muted:"🔇 Stumm", unmuted:"🎤 Mikro aktiv", cancel:"Abbrechen", stop_timer:"Timer stoppen", talk:"Sprechen (Leertaste)",
+    level:"Mikrofon-Pegel", prob:"Wakeword-Wahrscheinlichkeit", wake_word:"Wakeword", cutoff:"Schwelle", tone:"🔊 Testton",
+    debug:"Live-Debug", autoscroll:"Auto-Scroll", clear:"Leeren", ringing:"⏰ Timer klingelt",
+    name:"Name", mac:"MAC", night:"Nachtmodus", timers:"Timer", announcement:"Durchsage", on:"an", off:"aus", running:"läuft",
+    phase:{wake:"Wakeword erkannt – prüfe …", listening:"Hört zu", processing:"Verarbeite", recognized:"Erkannt",
+      not_recognized:"Nicht erkannt", responding:"Antwortet", result:"Fertig", wake_rejected:"Wakeword verworfen", wake_overturned:"Doch angenommen"},
+    log:{no_app:"Wakeword/Talk ohne verbundene App – ignoriert", second_conn:"Zweite Verbindung von {peer} abgelehnt",
+      app_connected:"App verbunden: {peer}", app_disconnected:"App getrennt ({reason})", mic_open:"Mikrofon offen ({name})",
+      call_timeout:"Call-Timeout (30 s ohne HANGUP)", wake_monitor:"Wakeword erkannt im Monitor-Modus (p={p}) – nicht beantwortet",
+      wake:"Wakeword '{name}' p={p}", muted:"Mikro stumm", unmuted:"Mikro aktiv", button_cancel:"Button: Call abbrechen",
+      wake_word_set:"Wakeword: {name}",
+      vpn_routes:"VPN-Routen über utun für LAN-Hosts {hosts} – läuft die App auf einem davon, scheitert ihr Verbindungsaufbau (VPN-Client trennen)",
+      listening:"Satellit lauscht auf {addr} als '{name}' ({mac})", mdns:"mDNS: _voice-incubator._tcp angekündigt"}},
+};
+let LANG = (() => { try { const l = localStorage.getItem("lang"); if (l) return l; } catch (e) {}
+  return (navigator.language || "en").toLowerCase().startsWith("de") ? "de" : "en"; })();
+const T = (k, a) => (I18N[LANG][k] || I18N.en[k] || k).replace("{0}", a);
+const LOGS = [];
+function applyLang() {
+  document.documentElement.lang = LANG; $("lang").value = LANG;
+  document.querySelectorAll("[data-i18n]").forEach(el => el.textContent = T(el.dataset.i18n));
+  render(); $("log").innerHTML = ""; LOGS.forEach(showLog);
+}
+$("lang").onchange = e => { LANG = e.target.value; try { localStorage.setItem("lang", LANG); } catch (err) {} applyLang(); };
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.state) { S = m.state; render(); }
+    if (m.meter) { M = m.meter; meters(); }
+    if (m.log) addLog(m.log);
+  };
+  ws.onclose = () => { $("conn").textContent = T("gui_lost"); setTimeout(connect, 1000); };
+}
+const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+$("mute").onclick = () => send({action:"mute"});
+$("talk").onclick = () => send({action:"talk"});
+$("tone").onclick = () => send({action:"test_tone"});
+$("ww").onchange = e => send({action:"wake_word", value:e.target.value});
+$("cutoff").oninput = e => { $("cutv").textContent = (+e.target.value).toFixed(2); send({action:"cutoff", value:+e.target.value}); };
+$("clear").onclick = () => $("log").innerHTML = "";
+document.addEventListener("keydown", e => { if (e.code === "Space" && e.target.tagName !== "SELECT") { e.preventDefault(); send({action:"talk"}); }});
+
+function render() {
+  if (!S.wake_words) return;
+  $("conn").textContent = S.connected ? T("connected", S.peer) : T("disconnected");
+  $("conn").className = "pill" + (S.connected ? " on" : "");
+  $("call").textContent = S.in_call ? T("call") : T("nocall");
+  $("call").className = "pill" + (S.in_call ? " on" : "");
+  $("mon").style.display = S.monitor ? "" : "none";
+  $("mute").textContent = S.muted ? T("muted") : T("unmuted");
+  $("mute").classList.toggle("on", S.muted);
+  $("talk").textContent = S.in_call ? T("cancel") : (S.ring.ringing ? T("stop_timer") : T("talk"));
+  $("talk").classList.toggle("active", S.in_call);
+  const ww = $("ww");
+  if (ww.options.length !== S.wake_words.length) ww.innerHTML = S.wake_words.map(w => `<option value="${w}">${w}</option>`).join("");
+  ww.value = S.wake_word;
+  $("cutoff").value = S.cutoff; $("cutv").textContent = (+S.cutoff).toFixed(2);
+  const r = S.ring, d = r.phase_data || {};
+  $("phase").textContent = (S.in_call || recent()) ? (I18N[LANG].phase[r.phase] || "") + (d.speaker ? ` · ${d.speaker}` : "") : (S.ring.ringing ? T("ringing") : "–");
+  $("text").textContent = d.text || d.heard || d.reason || "";
+  const tm = r.timers || {};
+  $("info").innerHTML = [[T("name"), S.name], [T("mac"), S.mac], [T("night"), r.night ? T("on") : T("off")],
+    [T("timers"), tm.count ? `${tm.count} (${Math.round(tm.remaining||0)} s)` : "–"], [T("announcement"), r.announcement ? T("running") : "–"]]
+    .map(([k,v]) => `<span>${k}</span><b>${v}</b>`).join("");
+}
+function meters() {
+  $("lvl").style.width = Math.min(100, M.level * 400) + "%";
+  $("prob").style.width = Math.min(100, M.prob * 100) + "%";
+  $("cut").style.left = (M.cutoff * 100) + "%";
+}
+function addLog(e) { LOGS.push(e); if (LOGS.length > 1000) LOGS.shift(); showLog(e); }
+function showLog(e) {
+  let msg = e.msg;
+  const tpl = e.key && I18N[LANG].log[e.key];
+  if (tpl) msg = tpl.replace(/\{(\w+)\}/g, (_, k) => (e.params || {})[k] ?? "");
+  const div = document.createElement("div");
+  div.className = "row";
+  div.innerHTML = `<span class="t">${e.t}</span> <span class="k-${e.kind}">${e.kind.padEnd(4)} ${esc(msg)}</span> ${e.data ? esc(JSON.stringify(e.data)) : ""}`;
+  const log = $("log"); log.appendChild(div);
+  while (log.children.length > 1000) log.firstChild.remove();
+  if ($("auto").checked) log.scrollTop = log.scrollHeight;
+}
+const esc = s => s.replace(/[&<]/g, c => ({"&":"&amp;","<":"&lt;"}[c]));
+const recent = () => S.ring.phase_at && (Date.now()/1000 - S.ring.phase_at) < 3;
+
+// ---------- LED-Ring ----------
+const N = 12, cv = $("ring"), cx = cv.getContext("2d");
+function col(c) {
+  if (!c) return null;
+  if (Array.isArray(c)) return c;
+  if (typeof c === "string" && c[0] === "#") return [1,3,5].map(i => parseInt(c.slice(i,i+2),16));
+  if (typeof c === "number") return [(c>>16)&255, (c>>8)&255, c&255];
+  return null;
+}
+function leds(t) {
+  const off = Array(N).fill([0,0,0]), r = S.ring, d = r.phase_data || {};
+  const all = c => Array(N).fill(c), spin = (c, speed) => off.map((_, i) => {
+    const pos = (t * speed) % N, dist = Math.min(Math.abs(i - pos), N - Math.abs(i - pos));
+    const k = Math.max(0, 1 - dist / 3); return c.map(v => v * k); });
+  const pulse = (c, speed) => all(c.map(v => v * (0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * speed)))));
+  const blink = (c, speed) => (Math.floor(t * speed) % 2) ? all(c) : off;
+  if (!S.connected) return pulse([255,120,0], 1.5).map(c => c.map(v => v * 0.25));
+  if (S.monitor) return blink([255,0,0], 2);
+  if (r.ringing) return blink([255,140,0], 3);
+  if (S.in_call || recent()) {
+    const age = Date.now()/1000 - (r.phase_at || 0);
+    switch (r.phase) {
+      case "wake": return all([200,200,255]).map(c => c.map(v => v * .5));
+      case "listening": return spin([40,120,255], 10);
+      case "processing": { const sc = d.r != null ? [d.r, d.g, d.b] : [160,60,255]; return spin(sc, 18); }
+      case "recognized": return all([40,120,255]);
+      case "responding": return pulse([40,160,255], 6);
+      case "result": return age < 1.5 ? all(d.ok ? [0,220,80] : [255,30,30]) : off;
+      case "not_recognized": case "wake_rejected": return age < 1.5 ? all([255,150,0]) : off;
+    }
+  }
+  if (S.muted) return all([255,0,0]).map(c => c.map(v => v * .5));
+  // Timer: Anteil Restzeit als Bogen
+  const tm = r.timers;
+  if (tm && tm.shown && tm.total) {
+    const c = col(tm.color0) || [255,180,0], frac = Math.max(0, Math.min(1, tm.remaining / tm.total));
+    return off.map((_, i) => i < Math.ceil(frac * N) ? c : [0,0,0]);
+  }
+  return off;
+}
+function draw() {
+  const t = performance.now() / 1000, L = leds(t), dim = S.ring && S.ring.night ? 0.35 : 1;
+  cx.clearRect(0, 0, 240, 240);
+  cx.beginPath(); cx.arc(120, 120, 100, 0, 7); cx.fillStyle = "#0b0d10"; cx.fill();
+  cx.beginPath(); cx.arc(120, 120, 62, 0, 7); cx.fillStyle = "#1d2229"; cx.fill();
+  for (let i = 0; i < N; i++) {
+    const a = -Math.PI/2 + i * 2*Math.PI/N, x = 120 + 80*Math.cos(a), y = 120 + 80*Math.sin(a);
+    const [R,G,B] = L[i].map(v => Math.round(v * dim)), lit = R+G+B > 20;
+    cx.shadowBlur = lit ? 18 : 0; cx.shadowColor = `rgb(${R},${G},${B})`;
+    cx.beginPath(); cx.arc(x, y, 11, 0, 7);
+    cx.fillStyle = lit ? `rgb(${R},${G},${B})` : "#22272e"; cx.fill();
+  }
+  cx.shadowBlur = 0;
+  requestAnimationFrame(draw);
+}
+applyLang(); draw(); connect();
+</script>
+</body>
+</html>

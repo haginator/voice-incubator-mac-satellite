@@ -1,0 +1,5 @@
+pymicro-wakeword
+sounddevice
+numpy
+zeroconf
+aiohttp
